@@ -1,24 +1,24 @@
 package logging
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log/syslog"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
 
 type (
-	color int
-	level int
+	Color int
+	Level int
 )
 
 // Colors for different log levels.
 const (
-	BLACK color = (iota + 30)
+	BLACK Color = (iota + 30)
 	RED
 	GREEN
 	YELLOW
@@ -30,7 +30,7 @@ const (
 
 // Logging levels.
 const (
-	CRITICAL level = iota
+	CRITICAL Level = iota
 	ERROR
 	WARNING
 	NOTICE
@@ -38,12 +38,35 @@ const (
 	DEBUG
 )
 
+var LevelNames = map[Level]string{
+	CRITICAL: "CRITICAL",
+	ERROR:    "ERROR",
+	WARNING:  "WARNING",
+	NOTICE:   "NOTICE",
+	INFO:     "INFO",
+	DEBUG:    "DEBUG",
+}
+
+var LevelColors = map[Level]Color{
+	CRITICAL: MAGENTA,
+	ERROR:    RED,
+	WARNING:  YELLOW,
+	NOTICE:   GREEN,
+	INFO:     WHITE,
+	DEBUG:    CYAN,
+}
+
+var (
+	DefaultLevel   = INFO
+	DefaultBackend = StderrBackend
+)
+
 // Logger is the interface for outputing log messages in different levels.
 // A new Logger can be created with NewLogger() function.
 // You can changed the output backend with SetBackend() function.
 type Logger interface {
 	// SetLevel changes the level of the logger. Default is logging.Info.
-	SetLevel(level)
+	SetLevel(Level)
 
 	// SetBackend replaces the current backend for output. Default is logging.StderrBackend.
 	SetBackend(Backend)
@@ -78,11 +101,20 @@ type Logger interface {
 
 // Backend is the main component of Logger that handles the output.
 type Backend interface {
-	// Handles one log message.
-	Log(name string, level string, color color, format string, args ...interface{})
+	// Log one message to output.
+	Log(format string, args []interface{}, c *Context)
 
 	// Close the backend.
 	Close()
+}
+
+// Context contains information about a log message.
+type Context struct {
+	Name     string
+	Level    Level
+	Time     time.Time
+	Filename string
+	Line     int
 }
 
 ///////////////////////////
@@ -94,7 +126,7 @@ type Backend interface {
 // logger is the default Logger implementation.
 type logger struct {
 	Name    string
-	Level   level
+	Level   Level
 	Backend Backend
 }
 
@@ -102,8 +134,8 @@ type logger struct {
 func NewLogger(name string) Logger {
 	return &logger{
 		Name:    name,
-		Level:   INFO,
-		Backend: StderrBackend,
+		Level:   DefaultLevel,
+		Backend: DefaultBackend,
 	}
 }
 
@@ -111,7 +143,7 @@ func (l *logger) Close() {
 	l.Backend.Close()
 }
 
-func (l *logger) SetLevel(level level) {
+func (l *logger) SetLevel(level Level) {
 	l.Level = level
 }
 
@@ -119,13 +151,27 @@ func (l *logger) SetBackend(b Backend) {
 	l.Backend = b
 }
 
-func (l *logger) log(level string, color color, format string, args ...interface{}) {
+func (l *logger) log(level Level, format string, args ...interface{}) {
 	// Add missing newline at the end.
 	if !strings.HasSuffix(format, "\n") {
 		format += "\n"
 	}
 
-	l.Backend.Log(l.Name, level, color, format, args...)
+	_, file, line, ok := runtime.Caller(2)
+	if !ok {
+		file = "???"
+		line = 0
+	}
+
+	ctx := &Context{
+		Name:     l.Name,
+		Level:    level,
+		Time:     time.Now(),
+		Filename: file,
+		Line:     line,
+	}
+
+	l.Backend.Log(format, args, ctx)
 }
 
 func (l *logger) Fatal(format string, args ...interface{}) {
@@ -142,37 +188,37 @@ func (l *logger) Panic(format string, args ...interface{}) {
 
 func (l *logger) Critical(format string, args ...interface{}) {
 	if l.Level >= CRITICAL {
-		l.log("CRITICAL", MAGENTA, format, args...)
+		l.log(CRITICAL, format, args...)
 	}
 }
 
 func (l *logger) Error(format string, args ...interface{}) {
 	if l.Level >= ERROR {
-		l.log("ERROR", RED, format, args...)
+		l.log(ERROR, format, args...)
 	}
 }
 
 func (l *logger) Warning(format string, args ...interface{}) {
 	if l.Level >= WARNING {
-		l.log("WARNING", YELLOW, format, args...)
+		l.log(WARNING, format, args...)
 	}
 }
 
 func (l *logger) Notice(format string, args ...interface{}) {
 	if l.Level >= NOTICE {
-		l.log("NOTICE", GREEN, format, args...)
+		l.log(NOTICE, format, args...)
 	}
 }
 
 func (l *logger) Info(format string, args ...interface{}) {
 	if l.Level >= INFO {
-		l.log("INFO", WHITE, format, args...)
+		l.log(INFO, format, args...)
 	}
 }
 
 func (l *logger) Debug(format string, args ...interface{}) {
 	if l.Level >= DEBUG {
-		l.log("DEBUG", CYAN, format, args...)
+		l.log(DEBUG, format, args...)
 	}
 }
 
@@ -231,14 +277,41 @@ func NewWriterBackend(w io.Writer) *WriterBackend {
 	return &WriterBackend{w: w}
 }
 
-func (b *WriterBackend) Log(name string, level string, color color, format string, args ...interface{}) {
-	fmt.Fprint(b.w, prefix(name, level)+colorize(fmt.Sprintf(format, args...), color))
+func (b *WriterBackend) Log(format string, args []interface{}, c *Context) {
+	fmt.Fprint(b.w, prefix(c)+fmt.Sprintf(format, args...))
 }
 
 func (b *WriterBackend) Close() {}
 
-var StderrBackend = NewWriterBackend(os.Stderr)
-var StdoutBackend = NewWriterBackend(os.Stdout)
+func prefix(c *Context) string {
+	return fmt.Sprintf("%s %s %-8s ", fmt.Sprint(c.Time)[:19], c.Name, LevelNames[c.Level])
+}
+
+////////////////////
+//                //
+// ConsoleBackend //
+//                //
+////////////////////
+
+type ConsoleBackend struct {
+	wb *WriterBackend
+}
+
+func NewConsoleBackend(w io.Writer) *ConsoleBackend {
+	return &ConsoleBackend{wb: NewWriterBackend(w)}
+}
+
+func (b *ConsoleBackend) Log(format string, args []interface{}, c *Context) {
+	b.wb.w.Write([]byte(fmt.Sprintf("\033[%dm", LevelColors[c.Level])))
+	b.wb.Log(format, args, c)
+	b.wb.w.Write([]byte("\033[0m")) // reset color
+
+}
+
+func (b *ConsoleBackend) Close() {}
+
+var StderrBackend = NewConsoleBackend(os.Stderr)
+var StdoutBackend = NewConsoleBackend(os.Stdout)
 
 ///////////////////
 //               //
@@ -261,20 +334,20 @@ func NewSyslogBackend(tag string) (*SyslogBackend, error) {
 	return &SyslogBackend{w: w}, nil
 }
 
-func (b *SyslogBackend) Log(name string, level string, color color, format string, args ...interface{}) {
+func (b *SyslogBackend) Log(format string, args []interface{}, c *Context) {
 	var fn func(string) error
-	switch level {
-	case "CRITICAL":
+	switch c.Level {
+	case CRITICAL:
 		fn = b.w.Crit
-	case "ERROR":
+	case ERROR:
 		fn = b.w.Err
-	case "WARNING":
+	case WARNING:
 		fn = b.w.Warning
-	case "NOTICE":
+	case NOTICE:
 		fn = b.w.Notice
-	case "INFO":
+	case INFO:
 		fn = b.w.Info
-	case "DEBUG":
+	case DEBUG:
 		fn = b.w.Debug
 	}
 	fn(fmt.Sprintf(format, args...))
@@ -299,12 +372,12 @@ func NewMultiBackend(backends ...Backend) *MultiBackend {
 	return &MultiBackend{backends: backends}
 }
 
-func (b *MultiBackend) Log(name string, level string, color color, format string, args ...interface{}) {
+func (b *MultiBackend) Log(format string, args []interface{}, ctx *Context) {
 	wg := sync.WaitGroup{}
 	wg.Add(len(b.backends))
 	for _, backend := range b.backends {
 		go func(backend Backend) {
-			backend.Log(name, level, color, format, args...)
+			backend.Log(format, args, ctx)
 			wg.Done()
 		}(backend)
 	}
@@ -321,22 +394,4 @@ func (b *MultiBackend) Close() {
 		}(backend)
 	}
 	wg.Wait()
-}
-
-///////////
-//       //
-// Utils //
-//       //
-///////////
-
-func prefix(name, level string) string {
-	return fmt.Sprintf("%s %s %-8s ", fmt.Sprint(time.Now().UTC())[:19], name, level)
-}
-
-func colorize(s string, color color) string {
-	buf := bytes.Buffer{}
-	buf.WriteString(fmt.Sprintf("\033[%dm", color))
-	buf.WriteString(s)
-	buf.WriteString("\033[0m") // reset color
-	return buf.String()
 }
