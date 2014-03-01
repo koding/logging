@@ -58,20 +58,20 @@ var LevelColors = map[Level]Color{
 
 var (
 	DefaultLevel   = INFO
-	DefaultBackend = StderrBackend
+	DefaultHandler = StderrHandler
 )
 
 // Logger is the interface for outputing log messages in different levels.
 // A new Logger can be created with NewLogger() function.
-// You can changed the output backend with SetBackend() function.
+// You can changed the output handler with SetHandler() function.
 type Logger interface {
 	// SetLevel changes the level of the logger. Default is logging.Info.
 	SetLevel(Level)
 
-	// SetBackend replaces the current backend for output. Default is logging.StderrBackend.
-	SetBackend(Backend)
+	// SetHandler replaces the current handler for output. Default is logging.StderrHandler.
+	SetHandler(Handler)
 
-	// Close backends.
+	// Close handlers.
 	Close()
 
 	// Fatal is equivalent to l.Critical followed by a call to os.Exit(1).
@@ -99,12 +99,12 @@ type Logger interface {
 	Debug(format string, args ...interface{})
 }
 
-// Backend is the main component of Logger that handles the output.
-type Backend interface {
+// Handler is the main component of Logger that handles the output.
+type Handler interface {
 	// Log one message to output.
-	Log(format string, args []interface{}, c *Context)
+	Log(message string)
 
-	// Close the backend.
+	// Close the handler.
 	Close()
 }
 
@@ -127,7 +127,7 @@ type Context struct {
 type logger struct {
 	Name    string
 	Level   Level
-	Backend Backend
+	Handler Handler
 }
 
 // NewLogger returns a new Logger implementation. Do not forget to close it at exit.
@@ -135,20 +135,20 @@ func NewLogger(name string) Logger {
 	return &logger{
 		Name:    name,
 		Level:   DefaultLevel,
-		Backend: DefaultBackend,
+		Handler: DefaultHandler,
 	}
 }
 
 func (l *logger) Close() {
-	l.Backend.Close()
+	l.Handler.Close()
 }
 
 func (l *logger) SetLevel(level Level) {
 	l.Level = level
 }
 
-func (l *logger) SetBackend(b Backend) {
-	l.Backend = b
+func (l *logger) SetHandler(b Handler) {
+	l.Handler = b
 }
 
 func (l *logger) log(level Level, format string, args ...interface{}) {
@@ -171,7 +171,7 @@ func (l *logger) log(level Level, format string, args ...interface{}) {
 		Line:     line,
 	}
 
-	l.Backend.Log(format, args, ctx)
+	l.Handler.Log(format, args, ctx)
 }
 
 func (l *logger) Fatal(format string, args ...interface{}) {
@@ -264,24 +264,24 @@ func Debug(format string, args ...interface{}) {
 
 ///////////////////
 //               //
-// WriterBackend //
+// WriterHandler //
 //               //
 ///////////////////
 
-// WriterBackend is a backend implementation that writes the logging output to a io.Writer.
-type WriterBackend struct {
+// WriterHandler is a handler implementation that writes the logging output to a io.Writer.
+type WriterHandler struct {
 	w io.Writer
 }
 
-func NewWriterBackend(w io.Writer) *WriterBackend {
-	return &WriterBackend{w: w}
+func NewWriterHandler(w io.Writer) *WriterHandler {
+	return &WriterHandler{w: w}
 }
 
-func (b *WriterBackend) Log(format string, args []interface{}, c *Context) {
+func (b *WriterHandler) Log(format string, args []interface{}, c *Context) {
 	fmt.Fprint(b.w, prefix(c)+fmt.Sprintf(format, args...))
 }
 
-func (b *WriterBackend) Close() {}
+func (b *WriterHandler) Close() {}
 
 func prefix(c *Context) string {
 	return fmt.Sprintf("%s %s %-8s ", fmt.Sprint(c.Time)[:19], c.Name, LevelNames[c.Level])
@@ -289,52 +289,52 @@ func prefix(c *Context) string {
 
 ////////////////////
 //                //
-// ConsoleBackend //
+// ConsoleHandler //
 //                //
 ////////////////////
 
-type ConsoleBackend struct {
-	wb *WriterBackend
+type ConsoleHandler struct {
+	wb *WriterHandler
 }
 
-func NewConsoleBackend(w io.Writer) *ConsoleBackend {
-	return &ConsoleBackend{wb: NewWriterBackend(w)}
+func NewConsoleHandler(w io.Writer) *ConsoleHandler {
+	return &ConsoleHandler{wb: NewWriterHandler(w)}
 }
 
-func (b *ConsoleBackend) Log(format string, args []interface{}, c *Context) {
+func (b *ConsoleHandler) Log(format string, args []interface{}, c *Context) {
 	b.wb.w.Write([]byte(fmt.Sprintf("\033[%dm", LevelColors[c.Level])))
 	b.wb.Log(format, args, c)
 	b.wb.w.Write([]byte("\033[0m")) // reset color
 
 }
 
-func (b *ConsoleBackend) Close() {}
+func (b *ConsoleHandler) Close() {}
 
-var StderrBackend = NewConsoleBackend(os.Stderr)
-var StdoutBackend = NewConsoleBackend(os.Stdout)
+var StderrHandler = NewConsoleHandler(os.Stderr)
+var StdoutHandler = NewConsoleHandler(os.Stdout)
 
 ///////////////////
 //               //
-// SyslogBackend //
+// SyslogHandler //
 //               //
 ///////////////////
 
-// SyslogBackend sends the logging output to syslog.
-type SyslogBackend struct {
+// SyslogHandler sends the logging output to syslog.
+type SyslogHandler struct {
 	w *syslog.Writer
 }
 
-func NewSyslogBackend(tag string) (*SyslogBackend, error) {
+func NewSyslogHandler(tag string) (*SyslogHandler, error) {
 	// Priority in New constructor is not important here because we
 	// do not use w.Write() directly.
 	w, err := syslog.New(syslog.LOG_INFO|syslog.LOG_USER, tag)
 	if err != nil {
 		return nil, err
 	}
-	return &SyslogBackend{w: w}, nil
+	return &SyslogHandler{w: w}, nil
 }
 
-func (b *SyslogBackend) Log(format string, args []interface{}, c *Context) {
+func (b *SyslogHandler) Log(format string, args []interface{}, c *Context) {
 	var fn func(string) error
 	switch c.Level {
 	case CRITICAL:
@@ -353,45 +353,45 @@ func (b *SyslogBackend) Log(format string, args []interface{}, c *Context) {
 	fn(fmt.Sprintf(format, args...))
 }
 
-func (b *SyslogBackend) Close() {
+func (b *SyslogHandler) Close() {
 	b.w.Close()
 }
 
 //////////////////
 //              //
-// MultiBackend //
+// MultiHandler //
 //              //
 //////////////////
 
-// MultiBackend sends the log output to multiple backends concurrently.
-type MultiBackend struct {
-	backends []Backend
+// MultiHandler sends the log output to multiple handlers concurrently.
+type MultiHandler struct {
+	handlers []Handler
 }
 
-func NewMultiBackend(backends ...Backend) *MultiBackend {
-	return &MultiBackend{backends: backends}
+func NewMultiHandler(handlers ...Handler) *MultiHandler {
+	return &MultiHandler{handlers: handlers}
 }
 
-func (b *MultiBackend) Log(format string, args []interface{}, ctx *Context) {
+func (b *MultiHandler) Log(format string, args []interface{}, ctx *Context) {
 	wg := sync.WaitGroup{}
-	wg.Add(len(b.backends))
-	for _, backend := range b.backends {
-		go func(backend Backend) {
-			backend.Log(format, args, ctx)
+	wg.Add(len(b.handlers))
+	for _, handler := range b.handlers {
+		go func(handler Handler) {
+			handler.Log(format, args, ctx)
 			wg.Done()
-		}(backend)
+		}(handler)
 	}
 	wg.Wait()
 }
 
-func (b *MultiBackend) Close() {
+func (b *MultiHandler) Close() {
 	wg := sync.WaitGroup{}
-	wg.Add(len(b.backends))
-	for _, backend := range b.backends {
-		go func(backend Backend) {
-			backend.Close()
+	wg.Add(len(b.handlers))
+	for _, handler := range b.handlers {
+		go func(handler Handler) {
+			handler.Close()
 			wg.Done()
-		}(backend)
+		}(handler)
 	}
 	wg.Wait()
 }
