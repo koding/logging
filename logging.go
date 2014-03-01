@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/syslog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -57,9 +58,18 @@ var LevelColors = map[Level]Color{
 }
 
 var (
-	DefaultLevel   = INFO
-	DefaultHandler = StderrHandler
+	DefaultLogger    = NewLogger(procName())
+	DefaultLevel     = INFO
+	DefaultHandler   = StderrHandler
+	DefaultFormatter = &defaultFormatter{}
+	StdoutHandler    = NewWriterHandler(os.Stdout)
+	StderrHandler    = NewWriterHandler(os.Stderr)
 )
+
+func init() {
+	StdoutHandler.Colorize = true
+	StderrHandler.Colorize = true
+}
 
 // Logger is the interface for outputing log messages in different levels.
 // A new Logger can be created with NewLogger() function.
@@ -70,9 +80,6 @@ type Logger interface {
 
 	// SetHandler replaces the current handler for output. Default is logging.StderrHandler.
 	SetHandler(Handler)
-
-	// Close handlers.
-	Close()
 
 	// Fatal is equivalent to l.Critical followed by a call to os.Exit(1).
 	Fatal(format string, args ...interface{})
@@ -99,22 +106,48 @@ type Logger interface {
 	Debug(format string, args ...interface{})
 }
 
-// Handler is the main component of Logger that handles the output.
+// Handler handles the output.
 type Handler interface {
-	// Log one message to output.
-	Log(message string)
+	SetFormatter(Formatter)
+	SetLevel(Level)
+
+	// Handle single log record.
+	Handle(*Record)
 
 	// Close the handler.
 	Close()
 }
 
-// Context contains information about a log message.
-type Context struct {
-	Name     string
-	Level    Level
-	Time     time.Time
-	Filename string
-	Line     int
+// Record contains all of the information about a single log message.
+type Record struct {
+	Format      string
+	Args        []interface{}
+	LoggerName  string
+	Level       Level
+	Time        time.Time
+	Filename    string
+	Line        int
+	ProcessID   int
+	ProcessName string
+}
+
+// Formatter formats a record.
+type Formatter interface {
+	// Format the record and return a message.
+	Format(*Record) (message string)
+}
+
+///////////////////////
+//                   //
+// Default Formatter //
+//                   //
+///////////////////////
+
+type defaultFormatter struct{}
+
+// Format outputs a message like "2014-02-28 18:15:57 [example] INFO     something happened"
+func (f *defaultFormatter) Format(rec *Record) string {
+	return fmt.Sprintf("%s [%s] %-8s %s", fmt.Sprint(rec.Time)[:19], rec.LoggerName, LevelNames[rec.Level], fmt.Sprintf(rec.Format, rec.Args...))
 }
 
 ///////////////////////////
@@ -149,29 +182,6 @@ func (l *logger) SetLevel(level Level) {
 
 func (l *logger) SetHandler(b Handler) {
 	l.Handler = b
-}
-
-func (l *logger) log(level Level, format string, args ...interface{}) {
-	// Add missing newline at the end.
-	if !strings.HasSuffix(format, "\n") {
-		format += "\n"
-	}
-
-	_, file, line, ok := runtime.Caller(2)
-	if !ok {
-		file = "???"
-		line = 0
-	}
-
-	ctx := &Context{
-		Name:     l.Name,
-		Level:    level,
-		Time:     time.Now(),
-		Filename: file,
-		Line:     line,
-	}
-
-	l.Handler.Log(format, args, ctx)
 }
 
 func (l *logger) Fatal(format string, args ...interface{}) {
@@ -222,13 +232,41 @@ func (l *logger) Debug(format string, args ...interface{}) {
 	}
 }
 
+func (l *logger) log(level Level, format string, args ...interface{}) {
+	// Add missing newline at the end.
+	if !strings.HasSuffix(format, "\n") {
+		format += "\n"
+	}
+
+	_, file, line, ok := runtime.Caller(2)
+	if !ok {
+		file = "???"
+		line = 0
+	}
+
+	rec := &Record{
+		Format:      format,
+		Args:        args,
+		LoggerName:  l.Name,
+		Level:       level,
+		Time:        time.Now(),
+		Filename:    file,
+		Line:        line,
+		ProcessName: procName(),
+		ProcessID:   os.Getpid(),
+	}
+
+	l.Handler.Handle(rec)
+}
+
+// procName returns the name of the current process.
+func procName() string { return filepath.Base(os.Args[0]) }
+
 ///////////////////
 //               //
 // DefaultLogger //
 //               //
 ///////////////////
-
-var DefaultLogger = NewLogger("")
 
 func Fatal(format string, args ...interface{}) {
 	DefaultLogger.Fatal(format, args...)
@@ -262,6 +300,39 @@ func Debug(format string, args ...interface{}) {
 	DefaultLogger.Debug(format, args...)
 }
 
+/////////////////
+//             //
+// BaseHandler //
+//             //
+/////////////////
+
+type BaseHandler struct {
+	Level     Level
+	Formatter Formatter
+}
+
+func NewBaseHandler() *BaseHandler {
+	return &BaseHandler{
+		Level:     DefaultLevel,
+		Formatter: DefaultFormatter,
+	}
+}
+
+func (h *BaseHandler) SetLevel(l Level) {
+	h.Level = l
+}
+
+func (h *BaseHandler) SetFormatter(f Formatter) {
+	h.Formatter = f
+}
+
+func (h *BaseHandler) FilterAndFormat(rec *Record) string {
+	if h.Level >= rec.Level {
+		return h.Formatter.Format(rec)
+	}
+	return ""
+}
+
 ///////////////////
 //               //
 // WriterHandler //
@@ -270,48 +341,33 @@ func Debug(format string, args ...interface{}) {
 
 // WriterHandler is a handler implementation that writes the logging output to a io.Writer.
 type WriterHandler struct {
-	w io.Writer
+	*BaseHandler
+	w        io.Writer
+	Colorize bool
 }
 
 func NewWriterHandler(w io.Writer) *WriterHandler {
-	return &WriterHandler{w: w}
+	return &WriterHandler{
+		BaseHandler: NewBaseHandler(),
+		w:           w,
+	}
 }
 
-func (b *WriterHandler) Log(format string, args []interface{}, c *Context) {
-	fmt.Fprint(b.w, prefix(c)+fmt.Sprintf(format, args...))
+func (b *WriterHandler) Handle(rec *Record) {
+	message := b.BaseHandler.FilterAndFormat(rec)
+	if message == "" {
+		return
+	}
+	if b.Colorize {
+		b.w.Write([]byte(fmt.Sprintf("\033[%dm", LevelColors[rec.Level])))
+	}
+	fmt.Fprint(b.w, message)
+	if b.Colorize {
+		b.w.Write([]byte("\033[0m")) // reset color
+	}
 }
 
 func (b *WriterHandler) Close() {}
-
-func prefix(c *Context) string {
-	return fmt.Sprintf("%s %s %-8s ", fmt.Sprint(c.Time)[:19], c.Name, LevelNames[c.Level])
-}
-
-////////////////////
-//                //
-// ConsoleHandler //
-//                //
-////////////////////
-
-type ConsoleHandler struct {
-	wb *WriterHandler
-}
-
-func NewConsoleHandler(w io.Writer) *ConsoleHandler {
-	return &ConsoleHandler{wb: NewWriterHandler(w)}
-}
-
-func (b *ConsoleHandler) Log(format string, args []interface{}, c *Context) {
-	b.wb.w.Write([]byte(fmt.Sprintf("\033[%dm", LevelColors[c.Level])))
-	b.wb.Log(format, args, c)
-	b.wb.w.Write([]byte("\033[0m")) // reset color
-
-}
-
-func (b *ConsoleHandler) Close() {}
-
-var StderrHandler = NewConsoleHandler(os.Stderr)
-var StdoutHandler = NewConsoleHandler(os.Stdout)
 
 ///////////////////
 //               //
@@ -321,6 +377,7 @@ var StdoutHandler = NewConsoleHandler(os.Stdout)
 
 // SyslogHandler sends the logging output to syslog.
 type SyslogHandler struct {
+	*BaseHandler
 	w *syslog.Writer
 }
 
@@ -331,12 +388,20 @@ func NewSyslogHandler(tag string) (*SyslogHandler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &SyslogHandler{w: w}, nil
+	return &SyslogHandler{
+		BaseHandler: NewBaseHandler(),
+		w:           w,
+	}, nil
 }
 
-func (b *SyslogHandler) Log(format string, args []interface{}, c *Context) {
+func (b *SyslogHandler) Handle(rec *Record) {
+	message := b.BaseHandler.FilterAndFormat(rec)
+	if message == "" {
+		return
+	}
+
 	var fn func(string) error
-	switch c.Level {
+	switch rec.Level {
 	case CRITICAL:
 		fn = b.w.Crit
 	case ERROR:
@@ -350,7 +415,7 @@ func (b *SyslogHandler) Log(format string, args []interface{}, c *Context) {
 	case DEBUG:
 		fn = b.w.Debug
 	}
-	fn(fmt.Sprintf(format, args...))
+	fn(message)
 }
 
 func (b *SyslogHandler) Close() {
@@ -372,12 +437,24 @@ func NewMultiHandler(handlers ...Handler) *MultiHandler {
 	return &MultiHandler{handlers: handlers}
 }
 
-func (b *MultiHandler) Log(format string, args []interface{}, ctx *Context) {
+func (b *MultiHandler) SetFormatter(f Formatter) {
+	for _, h := range b.handlers {
+		h.SetFormatter(f)
+	}
+}
+
+func (b *MultiHandler) SetLevel(l Level) {
+	for _, h := range b.handlers {
+		h.SetLevel(l)
+	}
+}
+
+func (b *MultiHandler) Handle(rec *Record) {
 	wg := sync.WaitGroup{}
 	wg.Add(len(b.handlers))
 	for _, handler := range b.handlers {
 		go func(handler Handler) {
-			handler.Log(format, args, ctx)
+			handler.Handle(rec)
 			wg.Done()
 		}(handler)
 	}
