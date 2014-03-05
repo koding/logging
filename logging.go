@@ -179,10 +179,6 @@ func NewLogger(name string) Logger {
 	}
 }
 
-func (l *logger) Close() {
-	l.Handler.Close()
-}
-
 func (l *logger) SetLevel(level Level) {
 	l.Level = level
 }
@@ -197,13 +193,11 @@ func (l *logger) SetCallDepth(n int) {
 
 func (l *logger) Fatal(format string, args ...interface{}) {
 	l.Critical(format, args...)
-	l.Close()
 	os.Exit(1)
 }
 
 func (l *logger) Panic(format string, args ...interface{}) {
 	l.Critical(format, args...)
-	l.Close()
 	panic(fmt.Sprintf(format, args...))
 }
 
