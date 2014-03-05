@@ -81,6 +81,12 @@ type Logger interface {
 	// SetHandler replaces the current handler for output. Default is logging.StderrHandler.
 	SetHandler(Handler)
 
+	// SetCallDepth sets the parameter passed to runtime.Caller().
+	// It is used to get the file name from call stack.
+	// For example you need to set it to 1 if you are using a wrapper around
+	// the Logger. Default value is zero.
+	SetCallDepth(int)
+
 	// Fatal is equivalent to l.Critical followed by a call to os.Exit(1).
 	Fatal(format string, args ...interface{})
 
@@ -158,9 +164,10 @@ func (f *defaultFormatter) Format(rec *Record) string {
 
 // logger is the default Logger implementation.
 type logger struct {
-	Name    string
-	Level   Level
-	Handler Handler
+	Name      string
+	Level     Level
+	Handler   Handler
+	calldepth int
 }
 
 // NewLogger returns a new Logger implementation. Do not forget to close it at exit.
@@ -182,6 +189,10 @@ func (l *logger) SetLevel(level Level) {
 
 func (l *logger) SetHandler(b Handler) {
 	l.Handler = b
+}
+
+func (l *logger) SetCallDepth(n int) {
+	l.calldepth = n
 }
 
 func (l *logger) Fatal(format string, args ...interface{}) {
@@ -238,7 +249,7 @@ func (l *logger) log(level Level, format string, args ...interface{}) {
 		format += "\n"
 	}
 
-	_, file, line, ok := runtime.Caller(2)
+	_, file, line, ok := runtime.Caller(l.calldepth + 2)
 	if !ok {
 		file = "???"
 		line = 0
