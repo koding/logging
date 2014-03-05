@@ -15,3 +15,9 @@ Features
 * Customizable logging handlers
 * Customizable formatters
 * Log to multiple backends concurrently
+
+
+Example Usage
+-------------
+
+See [https://github.com/koding/logging/blob/master/example/example.go](https://github.com/koding/logging/blob/master/example/example.go)
