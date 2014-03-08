@@ -16,7 +16,7 @@ func main() {
 	logging.Error("Error")
 	logging.Critical("Critical")
 
-	// Custom logger with default backent
+	// Custom logger with default handler
 	l := logging.NewLogger("test")
 
 	l.Debug("Debug")
@@ -26,7 +26,7 @@ func main() {
 	l.Error("Error")
 	l.Critical("Critical")
 
-	// Custom logger with custom backend
+	// Custom logger with custom handler
 	l2 := logging.NewLogger("test2")
 	l2.SetHandler(&MyHandler{})
 
