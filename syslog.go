@@ -1,10 +1,10 @@
+// +build !windows,!plan9
+
 package logging
 
 import (
 	"log/syslog"
 )
-
-// +build darwin freebsd linux netbsd openbsd
 
 ///////////////////
 //               //
