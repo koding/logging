@@ -98,7 +98,7 @@ type Logger interface {
 	// the Logger. Default value is zero.
 	SetCallDepth(int)
 
-	// New creates a new inerhited context logger with the given prefix.
+	// New creates a new inerhited context logger with given prefixes.
 	New(prefixes ...interface{}) Logger
 
 	// Fatal is equivalent to l.Critical followed by a call to os.Exit(1).
