@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-type Formatter struct{}
+type CustomFormatter struct{}
 
-func (f *Formatter) Format(rec *Record) string {
+func (f *CustomFormatter) Format(rec *Record) string {
 	paths := strings.Split(rec.Filename, string(os.PathSeparator))
 	// does even anyone uses root folder as their gopath?
 	filePath := strings.Join(paths[len(paths)-2:], string(os.PathSeparator))
@@ -27,7 +27,7 @@ func (f *Formatter) Format(rec *Record) string {
 func NewCustom(name string, debug bool) Logger {
 	log := NewLogger(name)
 	logHandler := NewWriterHandler(os.Stderr)
-	logHandler.Formatter = &Formatter{}
+	logHandler.Formatter = &CustomFormatter{}
 	logHandler.Colorize = true
 	log.SetHandler(logHandler)
 
