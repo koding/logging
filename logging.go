@@ -213,6 +213,7 @@ func (l *logger) SetCallDepth(n int) {
 // Fatal is equivalent to Critical() followed by a call to os.Exit(1).
 func (l *logger) Fatal(format string, args ...interface{}) {
 	l.Critical(format, args...)
+	l.Handler.Close()
 	os.Exit(1)
 }
 
